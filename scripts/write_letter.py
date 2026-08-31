@@ -110,6 +110,7 @@ DEFAULT_SENDER = {
     "unsubscribe": DEFAULT_UNSUBSCRIBE,
     "offer": "",
     "cta": "",
+    "subject_template": "",
 }
 
 
@@ -174,6 +175,8 @@ def load_sender(config_path=None):
         sender["offer"] = str(pisma["offer"]).replace("\\n", "\n")
     if pisma.get("cta"):
         sender["cta"] = str(pisma["cta"]).replace("\\n", "\n")
+    if pisma.get("tema"):
+        sender["subject_template"] = str(pisma["tema"])
     pochta = cfg.get("pochta") or {}
     if pochta.get("login"):
         sender["email"] = pochta["login"]
@@ -272,6 +275,7 @@ def build_letter_context(inn, record=None, pains=None, threshold=DEFAULT_THRESHO
 
     fio = director_name(company.get("director_fio"))
     greeting = first_name_patronymic(fio) or "коллеги"
+    sender_data = normalize_sender(sender) if sender else load_sender(config_path)
 
     context = {
         "inn": inn,
@@ -299,9 +303,9 @@ def build_letter_context(inn, record=None, pains=None, threshold=DEFAULT_THRESHO
                               else "только по названию домена" if domain_ok
                               else "сайт не подтверждён"),
         },
-        "sender": normalize_sender(sender) if sender else load_sender(config_path),
+        "sender": sender_data,
         "stoplist": stop_reason,
-        "subject": _subject(company, usable_pains),
+        "subject": _subject(company, usable_pains, sender_data),
     }
     context["facts_block"] = facts_block(usable)
     context["pains_block"] = pains_block(usable_pains)
@@ -388,12 +392,27 @@ def _pains_from_metrics(metrics, company):
     return diagnose_mod.pains_from(metrics, company)
 
 
-def _subject(company, pains):
-    """Тема письма. Коротко, иначе в списке писем она обрежется."""
+def _subject(company, pains, sender=None):
+    """Тема письма. Коротко, иначе в списке писем она обрежется.
+
+    Ниша продукта в код не зашита. Если в config.json задано pisma.tema,
+    берётся оно, {company} заменяется на короткое имя компании. Если поля
+    нет, тема собирается нейтрально, а когда среди поводов есть что-то про
+    сайт (включая «нет своего сайта, только карточка в справочнике»),
+    тема прямо про сайт: это работает и для тех, кто продаёт сайты.
+    """
     name = short_name(company.get("name")) or ""
-    subject = "Перевозки для %s" % name if name else "Вопрос по перевозкам"
+    template = (sender or {}).get("subject_template") or ""
+    if template:
+        subject = template.replace("{company}", name).strip()
+    elif name and any("сайт" in (p.get("text") or "").lower() for p in (pains or [])):
+        subject = "%s, вопрос по сайту" % name
+    elif name:
+        subject = "%s, пара вопросов" % name
+    else:
+        subject = "Пара вопросов о вашей компании"
     if len(subject) > 60:
-        subject = "Вопрос по перевозкам"
+        subject = "Пара вопросов о вашей компании"
     return subject
 
 

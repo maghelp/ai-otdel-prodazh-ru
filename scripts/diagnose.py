@@ -63,6 +63,49 @@ CMS_RULES = [
 SLOW_TTFB = 3.0        # порог «медленно», в разведке живые сайты давали 1.5 до 3.2 с
 STALE_YEARS = 2        # копирайт старше этого числа лет считаем протухшим
 
+# Хосты, которые НЕ являются сайтом компании: карты, справочники организаций,
+# агрегаторы по ИНН, доски объявлений, работные сайты и соцсети. Если «сайт»
+# компании это один из них, своего сайта у неё нет: в интернете есть только
+# карточка. Список закрытый и проверяемый, сработка это точное совпадение
+# хоста или его поддомена, без регулярок и без угадывания. Тот же перечень
+# справочников фильтрует веб-поиск на шаге обогащения, см. prodazhi-obogashchenie.
+NON_SITE_HOSTS = frozenset({
+    # карты и справочники организаций
+    "yandex.ru", "yandex.by", "ya.ru", "2gis.ru", "2gis.com", "2gis.kz",
+    "zoon.ru", "yell.ru", "flamp.ru", "orgpage.ru", "spr.ru", "blizko.ru",
+    # агрегаторы по ИНН и карточкам юрлиц
+    "rusprofile.ru", "list-org.com", "sbis.ru", "checko.ru", "audit-it.ru",
+    "zachestnyibiznes.ru", "companium.ru", "sparkinterfax.ru", "vbankcenter.ru",
+    # доски объявлений и маркетплейсы
+    "avito.ru", "youla.ru", "tiu.ru", "pulscen.ru", "regmarkets.ru",
+    "ozon.ru", "wildberries.ru",
+    # отраслевые каталоги
+    "prodoctorov.ru", "napopravku.ru", "docdoc.ru", "profi.ru", "youdo.com",
+    # работные сайты: карточка работодателя вместо сайта
+    "hh.ru", "superjob.ru", "rabota.ru", "zarplata.ru",
+    # соцсети и мессенджеры
+    "vk.com", "vk.ru", "ok.ru", "t.me", "telegram.me", "telegram.org",
+    "instagram.com", "facebook.com", "fb.com", "fb.me", "wa.me",
+    "api.whatsapp.com", "dzen.ru", "zen.yandex.ru",
+    # конструкторы-визитки без своего домена
+    "taplink.ws", "taplink.cc", "linktr.ee", "mssg.me",
+})
+
+
+def non_site_host(url):
+    """Хост из url, если это заведомо не сайт компании, иначе None.
+
+    Матчинг по точному хосту и по поддомену: maps.yandex.ru ловится на
+    yandex.ru, m.vk.com на vk.com.
+    """
+    host = host_of(url or "")
+    if not host:
+        return None
+    for bad in NON_SITE_HOSTS:
+        if host == bad or host.endswith("." + bad):
+            return host
+    return None
+
 
 def check_ssl(host, port=443, timeout=6):
     """Проверка сертификата ровно так, как это делает браузер.
@@ -122,11 +165,16 @@ def diagnose_site(url, html=None, page=None, skip_ssl=None):
         "has_viewport": False, "has_form": False, "forms_count": 0,
         "copyright_year": None, "has_ssl": False, "ssl_error": None,
         "ttfb_seconds": None, "total_seconds": None, "cms": None,
-        "has_email": False, "has_phone": False, "checked_at": _now(),
+        "has_email": False, "has_phone": False, "non_site_host": None,
+        "checked_at": _now(),
     }
     if not url:
         metrics["error"] = "адрес сайта не задан"
         return metrics
+
+    # Своего сайта нет: адрес компании ведёт на справочник или в соцсеть.
+    # Проверяется по хосту, до всякой сети, поэтому работает и в offline-разборе.
+    metrics["non_site_host"] = non_site_host(url)
 
     if skip_ssl is None:
         skip_ssl = html is not None or page is not None
@@ -144,6 +192,9 @@ def diagnose_site(url, html=None, page=None, skip_ssl=None):
         metrics["ttfb_seconds"] = page.get("ttfb")
         metrics["total_seconds"] = page.get("total")
         metrics["error"] = page.get("error")
+        # угаданный домен мог отдать 301 на карточку в 2ГИС или во ВКонтакте
+        if not metrics["non_site_host"]:
+            metrics["non_site_host"] = non_site_host(metrics.get("final_url"))
     metrics["reachable"] = bool(html)
     if not html:
         return metrics
@@ -189,6 +240,19 @@ def pains_from(metrics, company=None):
             "evidence": "сайт не найден ни в реестре, ни по названию",
             "field": "pain:no_site", "source_type": "registry",
             "source_url": None, "confidence": 1.0,
+        })
+        return pains
+
+    if metrics.get("non_site_host"):
+        host = metrics["non_site_host"]
+        pains.append({
+            "code": "spravochnik_vmesto_sajta",
+            "text": ("у компании нет своего сайта, в интернете её можно найти "
+                     "только по карточке на стороннем ресурсе (%s)" % host),
+            "evidence": ("адрес компании ведёт на %s, это каталог-агрегатор "
+                         "или соцсеть, а не сайт компании" % host),
+            "field": "pain:spravochnik_vmesto_sajta", "source_type": "registry",
+            "source_url": url, "confidence": 1.0,
         })
         return pains
 
@@ -255,6 +319,8 @@ def _now():
 
 def _print_report(metrics, pains):
     print("    адрес:        ", metrics.get("final_url") or metrics.get("url"))
+    if metrics.get("non_site_host"):
+        print("    свой сайт:     нет, только карточка на", metrics["non_site_host"])
     print("    ответ:        ", metrics.get("status"), "%s байт" % metrics.get("bytes"),
           "ttfb %s с" % metrics.get("ttfb_seconds"))
     print("    Метрика:      ", "есть, счётчик %s" % metrics["metrika_id"]
@@ -289,6 +355,9 @@ HEALTHY_SAMPLE = u"""<!doctype html><html><head><meta charset="utf-8">
 <script src="/bitrix/js/main/core/core.js"></script>
 <footer>&copy; 2026 info@zavod.ru</footer></body></html>"""
 
+LISTING_SAMPLE = u"""<!doctype html><html><head><title>Организация на карте</title>
+</head><body>карточка компании в справочнике</body></html>"""
+
 
 def _demo():
     print("=" * 72)
@@ -306,11 +375,16 @@ def _demo():
     m2["has_ssl"], m2["ttfb_seconds"] = True, 0.4
     _print_report(m2, pains_from(m2))
 
+    print("\n[3] Разбор без сети: вместо сайта карточка в справочнике")
+    m3 = diagnose_site("https://2gis.ru/kazan/firm/70000001006324122",
+                       html=LISTING_SAMPLE)
+    _print_report(m3, pains_from(m3))
+
     if "--offline" in sys.argv:
-        print("\n[3] Живой прогон пропущен, задан ключ --offline")
+        print("\n[4] Живой прогон пропущен, задан ключ --offline")
         return
 
-    print("\n[3] Живой прогон: kzsk.ru")
+    print("\n[4] Живой прогон: kzsk.ru")
     print("    образец заброшенного сайта: сертификат не совпадает с доменом,")
     print("    копирайт 2020, ни Метрики, ни формы заявки")
     try:
@@ -320,7 +394,8 @@ def _demo():
 
 
 SEVERITY = {
-    "no_site": "high", "site_down": "high", "no_email_on_site": "high",
+    "no_site": "high", "spravochnik_vmesto_sajta": "high", "site_down": "high",
+    "no_email_on_site": "high",
     "no_metrika": "medium", "no_form": "medium", "stale_copyright": "medium",
     "bad_ssl": "medium", "no_viewport": "low", "slow": "low",
 }
