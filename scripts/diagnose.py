@@ -74,8 +74,9 @@ NON_SITE_HOSTS = frozenset({
     "yandex.ru", "yandex.by", "ya.ru", "2gis.ru", "2gis.com", "2gis.kz",
     "zoon.ru", "yell.ru", "flamp.ru", "orgpage.ru", "spr.ru", "blizko.ru",
     # агрегаторы по ИНН и карточкам юрлиц
-    "rusprofile.ru", "list-org.com", "sbis.ru", "checko.ru", "audit-it.ru",
-    "zachestnyibiznes.ru", "companium.ru", "sparkinterfax.ru", "vbankcenter.ru",
+    "rusprofile.ru", "list-org.com", "sbis.ru", "saby.ru", "checko.ru",
+    "audit-it.ru", "zachestnyibiznes.ru", "companium.ru", "spark-interfax.ru",
+    "vbankcenter.ru", "rbc.ru", "reputation.ru", "star-pro.ru", "focus.kontur.ru",
     # доски объявлений и маркетплейсы
     "avito.ru", "youla.ru", "tiu.ru", "pulscen.ru", "regmarkets.ru",
     "ozon.ru", "wildberries.ru",
@@ -245,6 +246,8 @@ def pains_from(metrics, company=None):
 
     if metrics.get("non_site_host"):
         host = metrics["non_site_host"]
+        if host.startswith("www."):
+            host = host[4:]
         pains.append({
             "code": "spravochnik_vmesto_sajta",
             "text": ("у компании нет своего сайта, в интернете её можно найти "

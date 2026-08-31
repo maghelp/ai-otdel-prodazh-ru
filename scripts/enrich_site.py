@@ -171,6 +171,20 @@ def http_get(url, timeout=TIMEOUT, allow_insecure=True):
     parsed = urllib.parse.urlsplit(url)
     if parsed.hostname:
         _throttle(parsed.hostname)
+        # Кириллический домен (.рф) надо привести к punycode: иначе urllib
+        # кодирует host в latin-1 и падает с UnicodeEncodeError. Проверено
+        # 31.08.2026 на www.евраз-трейд.рф из выборки оптовиков.
+        try:
+            parsed.hostname.encode("ascii")
+        except UnicodeEncodeError:
+            try:
+                ascii_host = parsed.hostname.encode("idna").decode("ascii")
+                netloc = ascii_host + (":%d" % parsed.port if parsed.port else "")
+                url = urllib.parse.urlunsplit((parsed.scheme, netloc,
+                                               parsed.path or "/", parsed.query,
+                                               parsed.fragment))
+            except (UnicodeError, ValueError):
+                pass
     req = urllib.request.Request(url, headers={
         "User-Agent": UA,
         "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
